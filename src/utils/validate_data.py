@@ -1,124 +1,99 @@
-import great_expectations as ge
+import pandas as pd
 from typing import Tuple, List
 
+# -----------------------------
+# Helper validation functions
+# -----------------------------
+def column_exists(df: pd.DataFrame, col: str) -> bool:
+    return col in df.columns
 
-def validate_telco_data(df) -> Tuple[bool, List[str]]:
+def column_not_null(df: pd.DataFrame, col: str) -> bool:
+    return df[col].notnull().all()
+
+def values_in_set(df: pd.DataFrame, col: str, valid_set: list) -> bool:
+    return df[col].isin(valid_set).all()
+
+def values_between(df: pd.DataFrame, col: str, min_value=None, max_value=None) -> bool:
+    s = df[col]
+    if min_value is not None:
+        s = s[s >= min_value]
+    if max_value is not None:
+        s = s[s <= max_value]
+    return len(s) == len(df)
+
+def column_pair_greater_equal(df: pd.DataFrame, col_A, col_B, mostly=1.0) -> bool:
+    comparison = df[col_A] >= df[col_B]
+    return comparison.mean() >= mostly
+
+# -----------------------------
+# Main validation function
+# -----------------------------
+def validate_telco_data(df: pd.DataFrame) -> Tuple[bool, List[str]]:
     """
-    Comprehensive data validation for Telco Customer Churn dataset using Great Expectations.
-    
-    This function implements critical data quality checks that must pass before model training.
-    It validates data integrity, business logic constraints, and statistical properties
-    that the ML model expects.
-    
+    Comprehensive data validation for Telco Customer Churn dataset.
+    Implements schema, business logic, numeric range, and consistency checks.
     """
-    print("🔍 Starting data validation with Great Expectations...")
-    
-    # Convert pandas DataFrame to Great Expectations Dataset
-    ge_df = ge.dataset.PandasDataset(df)
-    
-    # === SCHEMA VALIDATION - ESSENTIAL COLUMNS ===
-    print("   📋 Validating schema and required columns...")
-    
-    # Customer identifier must exist (required for business operations)  
-    ge_df.expect_column_to_exist("customerID")
-    ge_df.expect_column_values_to_not_be_null("customerID")
-    
-    # Core demographic features
-    ge_df.expect_column_to_exist("gender") 
-    ge_df.expect_column_to_exist("Partner")
-    ge_df.expect_column_to_exist("Dependents")
-    
-    # Service features (critical for churn analysis)
-    ge_df.expect_column_to_exist("PhoneService")
-    ge_df.expect_column_to_exist("InternetService")
-    ge_df.expect_column_to_exist("Contract")
-    
-    # Financial features (key churn predictors)
-    ge_df.expect_column_to_exist("tenure")
-    ge_df.expect_column_to_exist("MonthlyCharges")
-    ge_df.expect_column_to_exist("TotalCharges")
-    
+    print("🔍 Starting data validation...")
+
+    failed_checks = []
+
+    # -----------------------------
+    # Convert numeric columns safely
+    # -----------------------------
+    for col in ["tenure", "MonthlyCharges", "TotalCharges"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Fill blank TotalCharges for new customers (tenure = 0)
+    if "TotalCharges" in df.columns and "tenure" in df.columns:
+        df.loc[df["tenure"] == 0, "TotalCharges"] = 0
+
+    # === SCHEMA VALIDATION ===
+    required_cols = [
+        "customerID", "gender", "Partner", "Dependents",
+        "PhoneService", "InternetService", "Contract",
+        "tenure", "MonthlyCharges", "TotalCharges"
+    ]
+    for col in required_cols:
+        if not column_exists(df, col):
+            failed_checks.append(f"{col}_missing")
+        elif not column_not_null(df, col):
+            failed_checks.append(f"{col}_nulls")
+
     # === BUSINESS LOGIC VALIDATION ===
-    print("   💼 Validating business logic constraints...")
+    if "gender" in df.columns and not values_in_set(df, "gender", ["Male", "Female"]):
+        failed_checks.append("gender_invalid")
     
-    # Gender must be one of expected values (data integrity)
-    ge_df.expect_column_values_to_be_in_set("gender", ["Male", "Female"])
-    
-    # Yes/No fields must have valid values
-    ge_df.expect_column_values_to_be_in_set("Partner", ["Yes", "No"])
-    ge_df.expect_column_values_to_be_in_set("Dependents", ["Yes", "No"])
-    ge_df.expect_column_values_to_be_in_set("PhoneService", ["Yes", "No"])
-    
-    # Contract types must be valid (business constraint)
-    ge_df.expect_column_values_to_be_in_set(
-        "Contract", 
-        ["Month-to-month", "One year", "Two year"]
-    )
-    
-    # Internet service types (business constraint)
-    ge_df.expect_column_values_to_be_in_set(
-        "InternetService",
-        ["DSL", "Fiber optic", "No"]
-    )
-    
+    for col in ["Partner", "Dependents", "PhoneService"]:
+        if col in df.columns and not values_in_set(df, col, ["Yes", "No"]):
+            failed_checks.append(f"{col}_invalid")
+
+    if "Contract" in df.columns and not values_in_set(df, "Contract", ["Month-to-month", "One year", "Two year"]):
+        failed_checks.append("Contract_invalid")
+
+    if "InternetService" in df.columns and not values_in_set(df, "InternetService", ["DSL", "Fiber optic", "No"]):
+        failed_checks.append("InternetService_invalid")
+
     # === NUMERIC RANGE VALIDATION ===
-    print("   📊 Validating numeric ranges and business constraints...")
-    
-    # Tenure must be non-negative (business logic - can't have negative tenure)
-    ge_df.expect_column_values_to_be_between("tenure", min_value=0)
-    
-    # Monthly charges must be positive (business logic - no free service)
-    ge_df.expect_column_values_to_be_between("MonthlyCharges", min_value=0)
-    
-    # Total charges should be non-negative (business logic)
-    ge_df.expect_column_values_to_be_between("TotalCharges", min_value=0)
-    
-    # === STATISTICAL VALIDATION ===
-    print("   📈 Validating statistical properties...")
-    
-    # Tenure should be reasonable (max ~10 years = 120 months for telecom)
-    ge_df.expect_column_values_to_be_between("tenure", min_value=0, max_value=120)
-    
-    # Monthly charges should be within reasonable business range
-    ge_df.expect_column_values_to_be_between("MonthlyCharges", min_value=0, max_value=200)
-    
-    # No missing values in critical numeric features  
-    ge_df.expect_column_values_to_not_be_null("tenure")
-    ge_df.expect_column_values_to_not_be_null("MonthlyCharges")
-    
+    numeric_checks = [
+        ("tenure", 0, 120),
+        ("MonthlyCharges", 0, 200),
+        ("TotalCharges", 0, None)
+    ]
+    for col, min_val, max_val in numeric_checks:
+        if col in df.columns and not values_between(df, col, min_val, max_val):
+            failed_checks.append(f"{col}_out_of_range")
+
     # === DATA CONSISTENCY CHECKS ===
-    print("   🔗 Validating data consistency...")
-    
-    # Total charges should generally be >= Monthly charges (except for very new customers)
-    # This is a business logic check to catch data entry errors
-    ge_df.expect_column_pair_values_A_to_be_greater_than_B(
-        column_A="TotalCharges",
-        column_B="MonthlyCharges",
-        or_equal=True,
-        mostly=0.95  # Allow 5% exceptions for edge cases
-    )
-    
-    # === RUN VALIDATION SUITE ===
-    print("   ⚙️  Running complete validation suite...")
-    results = ge_df.validate()
-    
-    # === PROCESS RESULTS ===
-    # Extract failed expectations for detailed error reporting
-    failed_expectations = []
-    for r in results["results"]:
-        if not r["success"]:
-            expectation_type = r["expectation_config"]["expectation_type"]
-            failed_expectations.append(expectation_type)
-    
-    # Print validation summary
-    total_checks = len(results["results"])
-    passed_checks = sum(1 for r in results["results"] if r["success"])
-    failed_checks = total_checks - passed_checks
-    
-    if results["success"]:
-        print(f"✅ Data validation PASSED: {passed_checks}/{total_checks} checks successful")
+    if "TotalCharges" in df.columns and "MonthlyCharges" in df.columns:
+        if not column_pair_greater_equal(df, "TotalCharges", "MonthlyCharges", mostly=0.95):
+            failed_checks.append("TotalCharges_lt_MonthlyCharges")
+
+    success = len(failed_checks) == 0
+
+    if success:
+        print(f"✅ Data validation PASSED")
     else:
-        print(f"❌ Data validation FAILED: {failed_checks}/{total_checks} checks failed")
-        print(f"   Failed expectations: {failed_expectations}")
-    
-    return results["success"], failed_expectations
+        print(f"❌ Data validation FAILED, issues: {failed_checks}")
+
+    return success, failed_checks
